@@ -1,59 +1,83 @@
-# from langchain_community.document_loaders import PyPDFLoader
-
-# from langchain_text_splitters import TokenTextSplitter
-
-# from langchain_core.output_parsers.string import StrOutputParser
-# from langchain_core.messages import SystemMessage
-# from langchain_core.prompts import (PromptTemplate, 
-#                                     HumanMessagePromptTemplate, 
-#                                     ChatPromptTemplate)
-# from langchain_core.runnables import RunnablePassthrough
-# from langchain_openai import (ChatOpenAI, 
-#                               OpenAIEmbeddings)
-# from langchain_chroma.vectorstores import Chroma
-from dotenv import load_dotenv
 import os
-load_dotenv()
-# # first task is to load it
-# loader_pdf = PyPDFLoader("C:\\Users\\Sanah\\Desktop\\testing-langchain.pdf")
+import streamlit as st
+from dotenv import load_dotenv
 
-# docs_list = loader_pdf.load()
-
-# # Text splitters break large docs into smaller chunks that will be retrievable individually and fit within model context window limit
-# token_splitter = TokenTextSplitter(encoding_name="cl100k_base",
-#                                    chunk_size=800,
-#                                    chunk_overlap=100)
-# docs_list_tokens_split = token_splitter.split_documents(docs_list)
-
-# # embeddings
-# embedding = OpenAIEmbeddings(model='text-embedding-3-small', api_key=os.getenv("OPENAI_API_KEY")
-# )
-
-# # vector db stores data
-# vectorstore = Chroma.from_documents(documents = docs_list_tokens_split, embedding = embedding, persist_directory= "./intro_to_ai")
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import TokenTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma.vectorstores import Chroma
 
-loader_pdf = PyPDFLoader(
-    r"C:\Users\Sanah\Desktop\testing-langchain.pdf"
-)
-docs = loader_pdf.load()
+from langchain_core.messages import SystemMessage
+from langchain_core.prompts import HumanMessagePromptTemplate, ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 
-splitter = TokenTextSplitter(
-    encoding_name="cl100k_base",
-    chunk_size=800,
-    chunk_overlap=100
-)
-chunks = splitter.split_documents(docs)
+load_dotenv()
 
-embedding = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
+PDF_PATH = "data/Intro_to_AI_ques.pdf"
+PERSIST_DIR = "./intro_to_ai"
+
+@st.cache_resource
+def load_retriever():
+    loader = PyMuPDFLoader(PDF_PATH)
+    docs = loader.load()
+
+    splitter = TokenTextSplitter(
+        encoding_name="cl100k_base",
+        chunk_size=800,
+        chunk_overlap=100
+    )
+    chunks = splitter.split_documents(docs)
+
+    embedding = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
+
+    vectorstore = Chroma.from_documents(
+        documents=chunks,
+        embedding=embedding,
+        persist_directory=PERSIST_DIR
+    )
+
+    return vectorstore.as_retriever(
+        search_type="mmr",
+        search_kwargs={"k": 1, "lambda_mult": 0.7}
+    )
+
+retriever = load_retriever()
+
+system_prompt = SystemMessage(
+    "Answer the question using only the provided content."
 )
 
-vectorstore = Chroma.from_documents(
-    documents=chunks,
-    embedding=embedding,
-    persist_directory="./intro_to_ai"
+human_prompt = HumanMessagePromptTemplate.from_template(
+    "Question:\n{question}\n\nContext:\n{context}"
 )
+
+prompt = ChatPromptTemplate([system_prompt, human_prompt])
+
+chat = ChatOpenAI(
+    model="gpt-4o-mini",
+    temperature=0,
+    api_key=os.getenv("OPENAI_API_KEY")
+)
+
+chain = (
+    {"context": retriever, "question": RunnablePassthrough()}
+    | prompt
+    | chat
+    | StrOutputParser()
+)
+
+st.header("365 Q&A Chatbot", divider=True)
+
+question = st.text_input("Type your question")
+
+if st.button("Ask") and question:
+    placeholder = st.empty()
+    answer = ""
+
+    for chunk in chain.stream(question):
+        answer += chunk
+        placeholder.markdown(answer)
